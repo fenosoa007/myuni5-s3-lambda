@@ -1,0 +1,56 @@
+{
+  "name": "banner-service",
+  "version": "1.0.0",
+  "description": "Serverless API for creating, reading, updating and deleting banners",
+  "main": "src/banner.js",
+  "scripts": {
+    "test": "jest --notify",
+    "lint": "eslint .",
+    "codecov": "jest --collectCoverage --coverageReporters='lcov'"
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged && jest --bail --ci --onlyChanged --notify"
+    }
+  },
+  "lint-staged": {
+    "*.js": "eslint --fix"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@bitbucket.org/sydneyuni/banner-service.git"
+  },
+  "keywords": [
+    "banner"
+  ],
+  "author": "Philip Bui",
+  "license": "ISC",
+  "homepage": "https://bitbucket.org/sydneyuni/banner-service#readme",
+  "dependencies": {
+    "aws-sdk": "^2.635.0",
+    "lambda-multipart": "^1.0.2",
+    "moment": "^2.24.0"
+  },
+  "devDependencies": {
+    "eslint": "^6.8.0",
+    "eslint-config-react-native-lit": "^1.0.3",
+    "husky": "^4.2.3",
+    "jest": "^25.1.0",
+    "lint-staged": "^10.1.0",
+    "serverless-apigw-binary": "^0.4.4"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-native-lit"
+    ],
+    "rules": {
+      "no-console": 0
+    }
+  },
+  "jest": {
+    "collectCoverageFrom": [
+      "src/**/*.js"
+    ],
+    "restoreMocks": true
+  }
+}

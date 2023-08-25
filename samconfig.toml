@@ -1,0 +1,13 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "stackS3Upload"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1iikiaujb0a54"
+s3_prefix = "stackS3Upload"
+region = "ap-southeast-2"
+confirm_changeset = false
+capabilities = "CAPABILITY_IAM"
+disable_rollback = true
+image_repositories = []
+parameter_overrides = "Application=\"noti\" Program=\"Shared\" Environment=\"C\" CloudFrontPriceClass=\"PriceClass_200\""

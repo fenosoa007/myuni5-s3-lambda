@@ -1,0 +1,355 @@
+# This is the SAM template that represents the architecture of your serverless application
+# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-template-basics.html
+
+# The AWSTemplateFormatVersion identifies the capabilities of the template
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/format-version-structure.html
+AWSTemplateFormatVersion: 2010-09-09
+Description:  S3 Lambda Upload
+
+# Transform section specifies one or more macros that AWS CloudFormation uses to process your template
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/transform-section-structure.html
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# Resources declares the AWS resources that you want to include in the stack
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resources-section-structure.html
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Tracing: Active
+  Api:
+    TracingEnabled: True
+    BinaryMediaTypes:
+      - application~1octet-stream
+Parameters:
+  Application:
+    Default: noti
+    Description: Application Name
+    Type: String
+    MinLength: 4
+    MaxLength: 4
+  Program:
+    Default: Shared
+    Type: String
+  Environment:
+    Default: C
+    Description: Environment (Coders, Development, Test, Production)
+    Type: String
+    AllowedValues: [C, D, T, P]
+    ConstraintDescription: Must specify C, D, T or P.
+  CloudFrontPriceClass:
+    Type: String
+    Description: "The price class for CloudFront distribution"
+    Default: "PriceClass_200"
+    AllowedValues:
+      - PriceClass_100
+      - PriceClass_200
+      - PriceClass_All
+Mappings:
+  EnvironmentMap:
+    C:
+      Name: Coders
+      Domain: coder-banner-usyd
+      Bucket: coder-banner-bucket
+    D:
+      Name: Develop
+      Domain: develop-banner-usyd
+      Bucket: develop-banner-bucket
+    T:
+      Name: Test
+      Domain: test-banner-usyd
+      Bucket: test-banner-bucket
+    P:
+      Name: Production
+      Domain: banner-usyd
+      Bucket: banner-bucket
+Conditions:
+  IsProd: !Equals [!Ref Environment, P]
+  IsCoders: !Equals [!Ref Environment, C]
+  IsNotCoders: !Not [!Equals [!Ref Environment, C]]
+Resources: 
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: BannerID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: BannerID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: Program
+          Value: !Ref Program
+  DynamoDBScalingRole:
+    Type: AWS::IAM::Role
+    Condition: IsProd
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - application-autoscaling.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:UpdateTable
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:SetAlarmState
+                  - cloudwatch:DeleteAlarms
+                Resource: "*"
+  
+  DynamoDBReadCapacityScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Condition: IsProd
+    Properties:
+      MaxCapacity: 50
+      MinCapacity: 1
+      ResourceId: !Sub table/${DynamoDBTable}
+      RoleARN: !GetAtt DynamoDBScalingRole.Arn
+      ScalableDimension: dynamodb:table:ReadCapacityUnits
+      ServiceNamespace: dynamodb
+  
+  DynamoDBReadScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Condition: IsProd
+    Properties:
+      PolicyName: ReadAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref DynamoDBReadCapacityScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: DynamoDBReadCapacityUtilization
+  
+  OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref AWS::StackName
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - "*"
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketName: !FindInMap [EnvironmentMap, !Ref Environment, Bucket]
+
+  # S3BucketPolicy:
+  #   Type: AWS::S3::BucketPolicy
+  #   Properties:
+  #     Bucket: !Ref S3Bucket
+  #     PolicyDocument:
+  #       Version: "2012-10-17"
+  #       Statement:
+  #         - Effect: Allow
+  #           Principal:
+  #             AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${OriginAccessIdentity}"
+  #           Action: "s3:GetObject"
+  #           Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: "true"
+        Comment: !Ref AWS::StackName
+        HttpVersion: http2
+        Origins:
+          - DomainName: !Sub "${S3Bucket}.s3.${AWS::Region}.amazonaws.com"
+            Id: bucketOrigin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${OriginAccessIdentity}
+        DefaultCacheBehavior:
+          Compress: "true"
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          TargetOriginId: bucketOrigin
+          ForwardedValues:
+            QueryString: "false"
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: !Ref CloudFrontPriceClass
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: "true"
+
+  PostBannerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/banner.post
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: A simple example includes a HTTP post method to add one item to a DynamoDB table. 
+      Environment:
+        Variables:
+          UploadBucket: !Ref S3Bucket
+          TABLE_NAME: !Ref DynamoDBTable
+          CLOUDFRONT_URL: !GetAtt Distribution.DomainName
+      Policies:
+        - AWSLambdaExecute # Managed Policy
+        - S3CrudPolicy:
+            BucketName: !Ref S3Bucket
+        - Version: 2012-10-17
+          Statement:
+            - Sid: S3BucketAccess
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !GetAtt S3Bucket.Arn
+        
+        - Version: 2012-10-17
+          Statement:
+            - Sid: DynamoDBAccess
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem                
+                - dynamodb:BatchGetItem
+                - dynamodb:UpdateItem
+                - dynamodb:deleteItem
+              Resource: !GetAtt DynamoDBTable.Arn
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /post
+            Method: POST
+
+  S3UploaderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/banner.upload
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: A simple example includes a HTTP post method to add one item to a DynamoDB table. 
+      Environment:
+        Variables:
+          UploadBucket: !Ref S3Bucket
+          TABLE_NAME: !Ref DynamoDBTable
+          CLOUDFRONT_URL: !GetAtt Distribution.DomainName
+      Policies:
+        - AWSLambdaExecute # Managed Policy
+        - S3CrudPolicy:
+            BucketName: !Ref S3Bucket
+        - Version: 2012-10-17
+          Statement:
+            - Sid: S3BucketAccess
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !GetAtt S3Bucket.Arn
+        
+        - Version: 2012-10-17
+          Statement:
+            - Sid: DynamoDBAccess
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem                
+                - dynamodb:BatchGetItem
+                - dynamodb:UpdateItem
+                - dynamodb:deleteItem
+              Resource: !GetAtt DynamoDBTable.Arn
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /upload
+            Method: POST
+
+  S3CreateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/banner.createS3Bucket
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Create S3 Bucket
+      Environment:
+        Variables:
+          UploadBucket: !Ref S3Bucket
+      Policies:
+        - AWSLambdaExecute # Managed Policy
+        - AmazonS3FullAccess
+        - S3CrudPolicy:
+            BucketName: !Ref S3Bucket
+        - Version: 2012-10-17
+          Statement:
+            - Sid: S3BucketAccess
+              Effect: Allow
+              Action:
+                - s3:*
+                - s3-object-lambda:*
+              Resource: arn:aws:s3:::*
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /s3
+            Method: POST
+
+#Outputs
+Outputs:
+  S3UploaderFunction:
+    Description: "S3Upload Function ARN"
+    Value: !GetAtt S3UploaderFunction.Arn
+  S3UploaderFunctionIamRole:
+    Description: "Implicit IAM Role created for function"
+    Value: !GetAtt S3UploaderFunctionRole.Arn
+  S3BucketName:
+    Description: S3 bucket
+    Value: !Ref S3Bucket
+
+  CloudFrontDistribution:
+    Description: "The CloudFront distribution in front of the S3 bucket"
+    Value: !Ref Distribution
+  S3CloudFrontUrl:
+    Description: "The website URL"
+    Value: !Sub "https://${Distribution.DomainName}/"
